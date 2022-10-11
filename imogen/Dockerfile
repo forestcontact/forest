@@ -1,4 +1,4 @@
-FROM registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-11-2-2 as signal
+FROM registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-11-3-1 as signal
 #FROM registry.gitlab.com/packaging/signal-cli/signal-cli-native:v0-10-5-3 as signal
 RUN signal-cli --version | tee /signal-version
 #RUN mv /usr/bin/signal-cli-native /usr/bin/signal-cli
