@@ -254,7 +254,7 @@ class Forest(QuestionBot):
             msg.arg1 = str(code)
         if not (msg.arg1 and len(msg.arg1) == 3 and msg.arg1.isnumeric()):
             return "Usage: /order <area code>"
-        diff = await self.get_user_balance(msg.source) - self.usd_price
+        diff = await self.get_user_usd_balance(msg.source) - self.usd_price
         numbers = await self.get_user_numbers(msg)
         # one free for everyone, always free in UA
         # need to note that this is a freebie
