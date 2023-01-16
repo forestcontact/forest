@@ -1800,8 +1800,8 @@ class QuestionBot(PayBot):
         return f"set {', '.join(fields)}"
 
 
-async def no_get(request: web.Request) -> web.Response:
-    raise web.HTTPFound(location="https://signal.org/")
+async def index_redirect(request: web.Request) -> web.Response:
+    raise web.HTTPFound(f"https://signal.me/#p/{utils.get_secret('BOT_NUMBER')}")
 
 
 async def pong_handler(request: web.Request) -> web.Response:
@@ -1880,7 +1880,7 @@ async def add_tiprat(_app: web.Application) -> None:
 
 app.add_routes(
     [
-        web.get("/", no_get),
+        web.get("/", index_redirect),
         web.get("/pongs/{pong}", pong_handler),
         web.post("/user/{phonenumber}", send_message_handler),
         web.post("/admin", admin_handler),
