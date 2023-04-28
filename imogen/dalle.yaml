@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: dalle-job
-  namespace: tenant-mobilecoin-imogen
+  namespace: tenant-dryad-spark
   labels:
       tier: free
 spec:
@@ -24,22 +24,22 @@ spec:
           # - name: REDIS_URL
           #   valueFrom:
           #     secretKeyRef:
-          #       name: dev-secrets
+          #       name: imogen-secrets
           #       key: REDIS_URL
           - name: DATABASE_URL
             valueFrom:
               secretKeyRef:
-                name: dev-secrets
+                name: imogen-secrets
                 key: DATABASE_URL
           - name: SUPABASE_API_KEY
             valueFrom:
               secretKeyRef:
-                name: dev-secrets
+                name: imogen-secrets
                 key: SUPABASE_API_KEY
           - name: TWITTER_CREDS
             valueFrom:
               secretKeyRef:
-                name: dev-secrets
+                name: imogen-secrets
                 key: TWITTER_CREDS
           - name: EXIT # exit when fetching prompt fails on queue empty
             value: "true"
