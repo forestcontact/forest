@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "mobfriend"
+version = "0.1.0"
+description = ""
+authors = ["Ilia <i@mobilecoin.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+aioprocessing = "*"
+asyncpg = "*"
+base58 = "*"
+phonenumberslite = "*"
+prometheus_async = "*"
+prometheus_client = "*"
+protobuf = "^3.20.0"
+termcolor = "*"
+ulid2 = "*"
+pycryptodome = "*"
+aiohttp = {extras = ["speedups"], version = "^3.8.1"}
+
+zbar-py = {git = "https://github.com/zplab/zbar-py"}
+amzqr = {git = "https://github.com/itdaniher/amazing-qr", rev = "63cbdfd"}
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

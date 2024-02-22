@@ -1,26 +1,24 @@
-app = "minfra-contactbot-dev"
-kill_signal = "SIGINT" 
+app = "charity-mock"
+kill_signal = "SIGINT"
 kill_timeout = 5
 
 [env]
-LOGLEVEL="DEBUG"
-BOT_NUMBER="+12185009004"
-ORDER=1
-GROUPS=1
-SIGNAL="signal-cli"
-DOWNLOAD=1
-#AUTOSAVE=1
+  LOGLEVEL="ERROR"
+  RUST_LOG="WARN"
+  RUST_BACKTRACE="full"
+  SIGNAL="signal-cli"
 
-[deploy]
-  strategy = "immediate"
+[mounts]
+  destination = "/app/data"
+  source = "persistence"
 
 [experimental]
   allowed_public_ports = []
   auto_rollback = false
 
 [metrics]
-port = 8080
-path = "/metrics"
+  port = 8080
+  path = "/metrics"
 
 [[services]]
   internal_port = 8080

@@ -32,7 +32,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import (
     Any,
-    Awaitable,
     Callable,
     Coroutine,
     Mapping,
@@ -64,10 +63,10 @@ except ImportError:
 
 JSON = dict[str, Any]
 Response = Union[str, list, dict[str, str], None]
-AsyncFunc = Callable[..., Awaitable]
+AsyncFunc = Callable[..., Coroutine[Any, Any, Any]]
 Command = Callable[["Bot", Message], Coroutine[Any, Any, Response]]
 
-roundtrip_histogram = Histogram("roundtrip_h", "Roundtrip message response time")  # type: ignore
+roundtrip_histogram = Histogram("roundtrip_h", "Roundtrip message response time")
 roundtrip_summary = Summary("roundtrip_s", "Roundtrip message response time")
 
 MessageParser = AuxinMessage if utils.AUXIN else StdioMessage
@@ -291,7 +290,7 @@ class Signal:
     ) -> Callable:
         def handler(task: asyncio.Task) -> None:
             name = task.get_name() + "-" + getattr(task.get_coro(), "__name__", "")
-            if self.sigints > 1:
+            if self.sigints > 1 or self.exiting:
                 return
             if asyncio.iscoroutinefunction(_func):
                 task = asyncio.create_task(_func())
@@ -352,6 +351,10 @@ class Signal:
         if "result" in blob:
             if isinstance(blob["result"], dict):
                 message_blob = blob
+            elif isinstance(blob["result"], list):
+                # Message expects a dict with an id, but signal-cli listContacts returns a list
+                # we're usually only get a single contact, so we massage this
+                message_blob = {"id": blob["id"], "result": blob["result"][0]}
             else:
                 logging.warning(blob["result"])
         if "error" in blob:
@@ -825,8 +828,8 @@ class Bot(Signal):
             self.signal_roundtrip_latency.append(
                 (message.timestamp, note, roundtrip_delta)
             )
-            roundtrip_summary.observe(roundtrip_delta)  # type: ignore
-            roundtrip_histogram.observe(roundtrip_delta)  # type: ignore
+            roundtrip_summary.observe(roundtrip_delta)
+            roundtrip_histogram.observe(roundtrip_delta)
             logging.info("noted roundtrip time: %s", roundtrip_delta)
             if utils.get_secret("ADMIN_METRICS"):
                 await self.admin(
@@ -1049,17 +1052,18 @@ class ExtrasBot(Bot):
         return t
 
 
+def compose_payment_content(receipt: str, note: str) -> dict:
+    # serde expects bytes to be u8[], not b64
+    tx = {"mobileCoin": {"receipt": u8(receipt)}}
+    note = note or "check out this java-free payment notification"
+    payment = {"Item": {"notification": {"note": note, "Transaction": tx}}}
+    # SignalServiceMessageContent protobuf represented as JSON (spicy)
+    # destination is outside the content so it doesn't matter,
+    # but it does contain the bot's profileKey
+    return {"dataMessage": {"body": None, "payment": payment}}
+
+
 class PayBot(ExtrasBot):
-    PAYMENTS_HELPTEXT = """Enable Signal Pay:
-
-    1. In Signal, tap “⬅️“ & tap on your profile icon in the top left & tap *Settings*
-
-    2. Tap *Payments* & tap *Activate Payments*
-
-    For more information on Signal Payments visit:
-
-    https://support.signal.org/hc/en-us/articles/360057625692-In-app-Payments"""
-
     @requires_admin
     async def do_fsr(self, msg: Message) -> Response:
         """
@@ -1139,9 +1143,19 @@ class PayBot(ExtrasBot):
 
     async def get_signalpay_address(self, recipient: str) -> Optional[str]:
         "get a receipient's mobilecoin address"
-        result = await self.signal_rpc_request("getPayAddress", peer_name=recipient)
+        if utils.AUXIN:
+            result = await self.signal_rpc_request("getPayAddress", peer_name=recipient)
+            b64_address = (
+                result.blob.get("Address", {})
+                .get("mobileCoinAddress", {})
+                .get("address")
+            )
+            if result.error or not b64_address:
+                logging.info("bad address: %s", result.blob)
+                return None
+        result = await self.signal_rpc_request("listContacts", recipient=recipient)
         b64_address = (
-            result.blob.get("Address", {}).get("mobileCoinAddress", {}).get("address")
+            result.blob.get("result", {}).get("profile", {}).get("mobileCoinAddress")
         )
         if result.error or not b64_address:
             logging.info("bad address: %s", result.blob)
@@ -1217,6 +1231,39 @@ class PayBot(ExtrasBot):
             f"redeemable for {str(mc_util.pmob2mob(amount_pmob - FEE_PMOB)).rstrip('0')} MOB",
         ]
 
+    async def confirm_tx_timeout(self, tx_id: str, recipient: str, timeout: int) -> str:
+        logging.debug("Attempting to confirm tx status for %s", recipient)
+        status = "tx_status_pending"
+        for i in range(timeout):
+            tx_status = await self.mob_request(
+                "get_transaction_log", transaction_log_id=tx_id
+            )
+            status = (
+                tx_status.get("result", {}).get("transaction_log", {}).get("status")
+            )
+            if status == "tx_status_succeeded":
+                logging.info(
+                    "Tx to %s suceeded - tx data: %s",
+                    recipient,
+                    tx_status.get("result"),
+                )
+                break
+            if status == "tx_status_failed":
+                logging.warning(
+                    "Tx to %s failed - tx data: %s",
+                    recipient,
+                    tx_status.get("result"),
+                )
+                break
+            await asyncio.sleep(1)
+        if status == "tx_status_pending":
+            logging.warning(
+                "Tx to %s timed out - tx data: %s",
+                recipient,
+                tx_status.get("result"),
+            )
+        return status
+
     # FIXME: clarify signature and return details/docs
     async def send_payment(  # pylint: disable=too-many-locals
         self,
@@ -1282,51 +1329,34 @@ class PayBot(ExtrasBot):
             msg.status, msg.transaction_log_id = "tx_status_failed", tx_id
             return msg
 
-        receipt_resp = await self.mob_request(
-            "create_receiver_receipts",
-            tx_proposal=prop,
-            account_id=await self.mobster.get_account(),
-        )
-        content = await self.fs_receipt_to_payment_message_content(
-            receipt_resp, receipt_message
-        )
-        # pass our beautifully composed JSON content to auxin.
-        # message body is ignored in this case.
-        payment_notif = await self.send_message(recipient, "", content=content)
-        resp_future = asyncio.create_task(self.wait_for_response(rpc_id=payment_notif))
-
+        full_service_receipt = (
+            await self.mob_request(
+                "create_receiver_receipts",
+                tx_proposal=prop,
+                account_id=account_id,
+            )
+        )["result"]["receiver_receipts"][0]
+        # this gets us a Receipt protobuf
+        b64_receipt = mc_util.full_service_receipt_to_b64_receipt(full_service_receipt)
+        if utils.AUXIN:
+            content = compose_payment_content(b64_receipt, receipt_message)
+            # pass our beautifully composed JSON content to auxin.
+            # message body is ignored in this case.
+            payment_notif = await self.send_message(recipient, "", content=content)
+            resp_future = asyncio.create_task(
+                self.wait_for_response(rpc_id=payment_notif)
+            )
+        else:
+            resp_future = asyncio.create_task(
+                self.signal_rpc_request(
+                    "sendPaymentNotification",
+                    receipt=b64_receipt,
+                    note=receipt_message,
+                    recipient=recipient,
+                )
+            )
         if confirm_tx_timeout:
-            logging.debug("Attempting to confirm tx status for %s", recipient)
-            status = "tx_status_pending"
-            for i in range(confirm_tx_timeout):
-                tx_status = await self.mob_request(
-                    "get_transaction_log", transaction_log_id=tx_id
-                )
-                status = (
-                    tx_status.get("result", {}).get("transaction_log", {}).get("status")
-                )
-                if status == "tx_status_succeeded":
-                    logging.info(
-                        "Tx to %s suceeded - tx data: %s",
-                        recipient,
-                        tx_status.get("result"),
-                    )
-                    break
-                if status == "tx_status_failed":
-                    logging.warning(
-                        "Tx to %s failed - tx data: %s",
-                        recipient,
-                        tx_status.get("result"),
-                    )
-                    break
-                await asyncio.sleep(1)
-
-            if status == "tx_status_pending":
-                logging.warning(
-                    "Tx to %s timed out - tx data: %s",
-                    recipient,
-                    tx_status.get("result"),
-                )
+            status = await self.confirm_tx_timeout(tx_id, recipient, confirm_tx_timeout)
             resp = await resp_future
             # the calling function can use these to check the payment status
             resp.status, resp.transaction_log_id = status, tx_id  # type: ignore
@@ -1434,9 +1464,10 @@ class QuestionBot(PayBot):
 
         # This checks to see if the answer is a valid candidate for float by replacing
         # the first comma or decimal point with a number to see if the resulting string .isnumeric()
+        # does the same for negative signs
         if answer_text and not (
-            answer_text.replace(".", "1", 1).isnumeric()
-            or answer_text.replace(",", "1", 1).isnumeric()
+            answer_text.replace("-", "1", 1).replace(".", "1", 1).isnumeric()
+            or answer_text.replace("-", "1", 1).replace(",", "1", 1).isnumeric()
         ):
             # cancel if user replies with any of the terminal answers "stop, cancel, quit, etc. defined above"
             if answer.lower() in self.TERMINAL_ANSWERS:
@@ -1772,8 +1803,8 @@ class QuestionBot(PayBot):
         return f"set {', '.join(fields)}"
 
 
-async def no_get(request: web.Request) -> web.Response:
-    raise web.HTTPFound(location="https://signal.org/")
+async def index_redirect(request: web.Request) -> web.Response:
+    raise web.HTTPFound(f"https://signal.me/#p/{utils.get_secret('BOT_NUMBER')}")
 
 
 async def pong_handler(request: web.Request) -> web.Response:
@@ -1852,7 +1883,7 @@ async def add_tiprat(_app: web.Application) -> None:
 
 app.add_routes(
     [
-        web.get("/", no_get),
+        web.get("/", index_redirect),
         web.get("/pongs/{pong}", pong_handler),
         web.post("/user/{phonenumber}", send_message_handler),
         web.post("/admin", admin_handler),

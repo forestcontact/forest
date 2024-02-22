@@ -86,7 +86,7 @@ class SimpleInterface:
     @asynccontextmanager
     async def get_connection(self) -> AsyncGenerator:
         if not pool.pool:
-            pool.connect(self.database, "simple interface")
+            await pool.connect(self.database, "simple interface")
         assert pool.pool
         async with pool.acquire() as conn:
             logging.info("connection acquired")
@@ -150,7 +150,7 @@ class PGInterface:
         for k in self.queries:
             if AUTOCREATE and "create" in k and "index" in k:
                 self.logger.info(f"creating index via {k}")
-                self.__getattribute__(f"sync_{k}")()
+                getattr(self, f"sync_{k}")()
 
     _autocreating_table = False
 
